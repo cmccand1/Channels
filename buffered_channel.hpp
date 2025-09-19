@@ -80,19 +80,4 @@ bool buffered_channel<T, N>::is_full() const {
   return (in_ + 1) % buf_.size() == out_;
 }
 
-template<typename T, std::size_t N>
-std::string buffered_channel<T, N>::buf_string() const {
-  std::size_t buf_len = buf_.size();
-  std::string buf_str = std::string("[");
-  for (std::size_t i = in_; i != out_; i = (i + 1) % buf_len) {
-    buf_str.append(std::to_string(buf_[i]));
-    if (i == (out_ - 1)) {
-      buf_str.append("]");
-    } else {
-      buf_str.append(" ");
-    }
-  }
-  return buf_str;
-}
-
 #endif //CHANNELS_BUFFERED_CHANNEL_HPP
