@@ -58,7 +58,7 @@ void buffered_channel<T, N>::put(T t) {
 template<typename T, std::size_t N>
 T buffered_channel<T, N>::get() {
   T val;
-  // wait for the producer
+  // wait if empty
   {
     chan_lock lock(mutex_);
     cv_.wait(lock, [this] { return is_empty(); });
