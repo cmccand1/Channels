@@ -34,7 +34,6 @@ class buffered_channel final : public channel<T> {
     std::size_t out_;
     std::mutex mutex_;
     std::condition_variable cv_;
-    bool ready_ = false;
 
     bool is_full() const;
 
