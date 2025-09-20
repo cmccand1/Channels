@@ -111,11 +111,8 @@ FetchContent_MakeAvailable(googletest)
 
 # Main executable
 add_executable(Channels main.cpp
-        Channel.hpp
-        unbuffered_channel.cpp
-        unbuffered_channel.hpp
-        buffered_channel.cpp
-        buffered_channel.hpp)
+        channel.hpp
+)
 
 # Tests
 include(CTest)
