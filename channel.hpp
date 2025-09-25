@@ -12,13 +12,11 @@ using chan_lock = std::unique_lock<std::mutex>;
 
 enum class channel_error {
   channel_closed,
-  would_block
+  would_block,
+  closed_and_drained
 };
 
-template<std::movable T>
-using result = std::expected<T, channel_error>;
-
-std::string error_string(channel_error e) {
+inline std::string error_string(channel_error e) {
   switch (e) {
     case channel_error::channel_closed:
       return "Chanel is closed";
@@ -29,45 +27,66 @@ std::string error_string(channel_error e) {
   }
 }
 
+template<std::movable T>
+using result = std::expected<T, channel_error>;
+
 template<std::movable T, std::size_t N = 1>
 class channel final {
   public:
     explicit channel() = default;
 
-    // no copy constructor
     channel(const channel &other) = delete;
 
-    // no move constructor
     channel(channel &&other) noexcept = delete;
 
-    // no copy assignment
     channel &operator=(const channel &other) = delete;
 
-    // no move assignment
     channel &operator=(channel &&other) noexcept = delete;
 
     ~channel() = default;
 
-    void put(T t);
+    void put_unbuffered(T &&t);
 
-    result<T> get();
+    void put_unbuffered(const T &t);
+
+    result<T> get_unbuffered();
+
+    void put(const T &t);
+
+    void put(T &&t);
 
     /**
-     * Makes a non-blocking attempt to get a value off the channel.
-     *
+     * Blocks until a value is available to get off the channel.
+     * If the channel is closed, returns an error.
      */
-    result<T> try_get();
+    [[nodiscard]] result<T> get();
 
-    bool is_buffered() const;
+    /**
+     * Non-blocking attempt to get a value from the channel.
+     * If the channel is closed or no value is available, returns an error.
+     */
+    [[nodiscard]] result<T> try_get();
 
-    bool is_closed() const;
+    /**
+     * Checks if the channel is buffered (i.e., has a buffer size greater than 1).
+     * @return true if the channel is buffered, false otherwise.
+     */
+    [[nodiscard]] bool is_buffered() const;
+
+    /**
+     * Checks if the channel is closed. A closed channel cannot accept new values,
+     * but can still be read from until it is empty.
+     * @return true if the channel is closed, false otherwise.
+     */
+    [[nodiscard]] bool is_closed() const;
+
+    void close();
 
   private:
     // buffered channel
     std::array<T, N> buf_{};
     std::size_t in_{0};
     std::size_t out_{0};
-    // size N+1 to distinguish full vs empty
 
     // unbuffered channel
     T val_{};
@@ -81,66 +100,162 @@ class channel final {
 
     void put_buffered(T &&t);
 
-    result<T> get_buffered();
+    void put_buffered(const T &t);
 
-    result<T> try_get_buffered();
+    [[nodiscard]] result<T> get_buffered();
 
-    bool is_empty() const;
+    result<T> try_get_unbuffered();
 
-    bool is_full() const;
+    [[nodiscard]] result<T> try_get_buffered();
+
+    [[nodiscard]] bool is_empty() const;
+
+    [[nodiscard]] bool is_full() const;
 };
 
 template<std::movable T, std::size_t N>
-void channel<T, N>::put(T t) {
+void channel<T, N>::put(const T &t) {
+  if (closed_) {
+    throw std::runtime_error("Error: attempted to put to a closed channel.");
+  }
   if (is_buffered()) {
-    put_buffered(std::forward<T>(t));
+    put_buffered(t);
     return;
   }
-  // wait while full (i.e., value present)
+  put_unbuffered(t);
+}
+
+template<std::movable T, std::size_t N>
+void channel<T, N>::put(T &&t) {
+  if (closed_) {
+    throw std::runtime_error("Error: attempted to put to a closed channel.");
+  }
+  if (is_buffered()) {
+    put_buffered(std::move(t));
+    return;
+  }
+  put_unbuffered(std::move(t));
+}
+
+template<std::movable T, std::size_t N>
+void channel<T, N>::put_buffered(const T &t) {
+  //
+  {
+    chan_lock lock(mutex_);
+    producers_.wait(lock, [this] { return !is_full(); });
+    buf_[in_] = t; // copy for lvalues
+    in_ = (in_ + 1) % buf_.size();
+  }
+  consumers_.notify_all();
+}
+
+template<std::movable T, std::size_t N>
+void channel<T, N>::put_buffered(T &&t) {
+  //
+  {
+    chan_lock lock(mutex_);
+    producers_.wait(lock, [this] { return !is_full(); });
+    buf_[in_] = std::move(t);
+    in_ = (in_ + 1) % buf_.size();
+  }
+  consumers_.notify_all();
+}
+
+template<std::movable T, std::size_t N>
+void channel<T, N>::put_unbuffered(const T &t) {
+  //
+  {
+    chan_lock lock(mutex_);
+    producers_.wait(lock, [this] { return !has_val_; });
+    val_ = t; // copy for lvalues
+    has_val_ = true;
+  }
+  consumers_.notify_all();
+}
+
+template<std::movable T, std::size_t N>
+void channel<T, N>::put_unbuffered(T &&t) {
+  //
   {
     chan_lock lock(mutex_);
     producers_.wait(lock,
-             [this] {
-               return !has_val_;
-             });
+                    [this] {
+                      return !has_val_;
+                    });
     val_ = std::move(t);
     has_val_ = true;
   }
-  // notify a waiting consumer that data is available
-  consumers_.notify_one();
+  consumers_.notify_all();
 }
 
+template<std::movable T, std::size_t N>
+result<T> channel<T, N>::get_unbuffered() {
+  T val;
+  //
+  {
+    chan_lock lock(mutex_);
+    consumers_.wait(lock,
+                    [this] { return has_val_; });
+    val = std::move(val_);
+    has_val_ = false;
+  }
+  producers_.notify_all();
+  return result<T>(val);
+}
 
 template<std::movable T, std::size_t N>
 result<T> channel<T, N>::get() {
   if (closed_) return std::unexpected(channel_error::channel_closed);
-  if (is_buffered()) {
-    return get_buffered();
-  }
+  if (is_buffered()) { return get_buffered(); }
 
+  return get_unbuffered();
+}
+
+template<std::movable T, std::size_t N>
+result<T> channel<T, N>::get_buffered() {
   T val;
-  // wait while empty
+  //
   {
     chan_lock lock(mutex_);
-    consumers_.wait(lock,
-             [this] { return has_val_; });
-    val = std::move(val_);
-    has_val_ = false;
+    consumers_.wait(lock, [this] { return !is_empty(); });
+    val = std::move(buf_[out_]);
+    out_ = (out_ + 1) % buf_.size();
   }
-  // notify a waiting producer that space is available
-  producers_.notify_one();
+  producers_.notify_all();
   return result<T>(val);
 }
 
 template<std::movable T, std::size_t N>
 result<T> channel<T, N>::try_get() {
   if (closed_) return std::unexpected(channel_error::channel_closed);
-  if (is_buffered()) {
-    return try_get_buffered();
-  }
+  if (is_buffered()) { return try_get_buffered(); }
+  return try_get_unbuffered();
+}
+
+template<std::movable T, std::size_t N>
+result<T> channel<T, N>::try_get_buffered() {
   T val;
+  //
   {
-    // Non-blocking attempt
+    chan_lock lock(mutex_, std::try_to_lock);
+    if (!lock.owns_lock()) {
+      return std::unexpected(channel_error::would_block);
+    }
+    if (is_empty()) {
+      return std::unexpected(channel_error::would_block);
+    }
+    val = std::move(buf_[out_]);
+    out_ = (out_ + 1) % buf_.size();
+  }
+  producers_.notify_one();
+  return result<T>(val);
+}
+
+template <std::movable T, std::size_t N>
+result<T> channel<T, N>::try_get_unbuffered() {
+  T val;
+  //
+  {
     chan_lock lock(mutex_, std::try_to_lock);
     if (!lock.owns_lock()) {
       return std::unexpected(channel_error::would_block);
@@ -151,8 +266,7 @@ result<T> channel<T, N>::try_get() {
     val = std::move(val_);
     has_val_ = false;
   }
-  // notify a waiting producer that space is available
-  producers_.notify_one();
+  producers_.notify_all();
   return result<T>(val);
 }
 
@@ -172,51 +286,8 @@ bool channel<T, N>::is_closed() const {
 }
 
 template<std::movable T, std::size_t N>
-void channel<T, N>::put_buffered(T &&t) {
-  // wait while full
-  {
-    chan_lock lock(mutex_);
-    producers_.wait(lock, [this] { return !is_full(); });
-    buf_[in_] = std::move(t);
-    in_ = (in_ + 1) % buf_.size();
-  } // unlocked
-  // notify a waiting consumer that data is available
-  consumers_.notify_one();
-}
-
-template<std::movable T, std::size_t N>
-result<T> channel<T, N>::get_buffered() {
-  T val;
-  // wait while buffer is empty
-  {
-    chan_lock lock(mutex_);
-    consumers_.wait(lock, [this] { return !is_empty(); });
-    val = std::move(buf_[out_]);
-    out_ = (out_ + 1) % buf_.size();
-  } // unlocked
-  // notify a waiting producer that space is available
-  producers_.notify_one();
-  return result<T>(val);
-}
-
-template<std::movable T, std::size_t N>
-result<T> channel<T, N>::try_get_buffered() {
-  T val;
-  // Non-blocking attempt to get from buffer
-  {
-    chan_lock lock(mutex_, std::try_to_lock);
-    if (!lock.owns_lock()) {
-      return std::unexpected(channel_error::would_block);
-    }
-    if (is_empty()) {
-      return std::unexpected(channel_error::would_block);
-    }
-    val = std::move(buf_[out_]);
-    out_ = (out_ + 1) % buf_.size();
-  } // unlocked
-  // notify a waiting producer that space is available
-  producers_.notify_one();
-  return result<T>(val);
+void channel<T, N>::close() {
+  closed_ = true;
 }
 
 template<std::movable T, std::size_t N>

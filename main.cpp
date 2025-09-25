@@ -22,7 +22,7 @@ void consumer(channel<int, Size> &chan, std::atomic<int> &failed_reads) {
   for (int i = 0; i < 10'000; ++i) {
     if (auto res = chan.try_get()) {
       std::lock_guard lock(io_mutex);
-      std::cout << *res << "\n";
+      std::cout << "Consumer got " << *res << "\n";
     } else {
       failed_reads.fetch_add(1, std::memory_order::relaxed);
       chan.get();
@@ -61,6 +61,8 @@ int main() {
   constexpr int NUM_CONSUMERS = 1000;
   constexpr int NUM_PRODUCERS = 1000;
   std::vector<std::thread> producers;
+
+  // buf_chan.close();
   producers.reserve(NUM_PRODUCERS);
   for (int i = 0; i < NUM_PRODUCERS; ++i) {
     producers.emplace_back(single_producer<BUF_SIZE>, std::ref(buf_chan));
