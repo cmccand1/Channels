@@ -1,7 +1,7 @@
 # ============================================================================
 # Minimum + project + policies
 # ============================================================================
-cmake_minimum_required(VERSION 4.0)
+cmake_minimum_required(VERSION 3.20)
 project(Channels)
 
 # ============================================================================
@@ -41,6 +41,10 @@ endif ()
 if (ENABLE_ASAN AND ENABLE_TSAN)
     message(FATAL_ERROR "ENABLE_ASAN and ENABLE_TSAN are mutually exclusive.")
 endif ()
+if (ENABLE_TSAN AND ENABLE_UBSAN)
+    message(WARNING "TSan and UBSan enabled together can cause false positives; disabling UBSan.")
+    set(ENABLE_UBSAN OFF)
+endif ()
 set(SANITIZER_COMPILE_FLAGS)
 set(SANITIZER_LINK_FLAGS)
 if (NOT CMAKE_BUILD_TYPE)
@@ -78,7 +82,7 @@ set(EXPERIMENTAL_LIB_FLAG)
 if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     list(APPEND EXPERIMENTAL_LIB_FLAG -fexperimental-library)
 endif ()
-add_compile_options(${PROJECT_WARNING_FLAGS} ${SANITIZER_COMPILE_FLAGS} ${CONSTEXPR_LIMIT_FLAGS} ${EXPERIMENTAL_LIB_FLAG})
+add_compile_options(${SANITIZER_COMPILE_FLAGS} ${CONSTEXPR_LIMIT_FLAGS} ${EXPERIMENTAL_LIB_FLAG})
 add_link_options(${SANITIZER_LINK_FLAGS})
 
 
@@ -113,9 +117,15 @@ FetchContent_MakeAvailable(googletest)
 add_executable(Channels main.cpp
         channel.hpp
 )
+target_compile_options(Channels PRIVATE ${PROJECT_WARNING_FLAGS})
 
 # Tests
 include(CTest)
+add_executable(channel_test channel_test.cpp channel.hpp)
+target_compile_options(channel_test PRIVATE ${PROJECT_WARNING_FLAGS})
+target_link_libraries(channel_test GTest::gtest_main)
+include(GoogleTest)
+gtest_discover_tests(channel_test)
 
 
 # ============================================================================
