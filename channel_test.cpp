@@ -144,6 +144,7 @@ TEST(BufferedChannel, TryGetFromClosedEmptyReturnsChannelClosed) {
 }
 
 TEST(BufferedChannel, IsBuffered) {
+  static_assert(channel<int, 4>::is_buffered());
   channel<int, 4> ch;
   EXPECT_TRUE(ch.is_buffered());
 }
@@ -259,6 +260,7 @@ TEST(UnbufferedChannel, TryGetReturnsWouldBlockWhenEmpty) {
 }
 
 TEST(UnbufferedChannel, IsNotBuffered) {
+  static_assert(!channel<int>::is_buffered());
   channel<int> ch;
   EXPECT_FALSE(ch.is_buffered());
 }
